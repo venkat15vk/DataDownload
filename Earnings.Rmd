@@ -1,0 +1,192 @@
+---
+title: "EPS vs Stock Sell Price"
+author: "Venkat Gopalakrishnan"
+date: "3/4/2017"
+output: html_document
+---
+
+```{r, warning=FALSE, include=FALSE}
+
+library("TSA")
+library("forecast")
+library("tseries")
+library("zoo")
+library("lubridate")
+library("bsts")
+library("dplyr")
+library("ggplot2")
+
+```
+
+
+
+```{r warning=FALSE}
+
+# functions definition
+
+ggplotRegression <- function (fit) {
+
+require(ggplot2)
+
+ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  labs(title = paste("Adj R2 = ",signif(summary(fit)$adj.r.squared, 5),
+                     "Intercept =",signif(fit$coef[[1]],5 ),
+                     " Slope =",signif(fit$coef[[2]], 5),
+                     " P =",signif(summary(fit)$coef[2,4], 5)))
+}
+
+
+```
+
+
+```{r warning=FALSE}
+
+epsData <- read.csv("/Users/VK/Desktop/UChicago/TimeSeries/Final Project/Data/eps/PCLN.csv", header=TRUE, sep = ",")
+
+
+epsTS <- ts(epsData$EPS, start = c(2007,1), end=c(2016,4), frequency = 4)
+HighPriceTS <- ts(epsData$HighStockPrice, start = c(2007,1), end=c(2016,4), frequency = 4)
+
+plot(stl(epsTS, "periodic"), main="EPS")
+plot(stl(HighPriceTS, "periodic"), main="Stock")
+
+
+# there is a clear (upward) trend and seasonality.
+
+```
+
+
+
+# Model - 1 (Seasonal and Sequential models with Historical EPS data to forecast EPS)
+
+
+```{r warning=FALSE}
+
+# model by season - quarter by quarter
+
+q1.forecastEps <- forecast(auto.arima(subset(epsTS, quarter = 1)),h=4)
+q2.forecastEps <- forecast(auto.arima(subset(epsTS, quarter = 2)),h=4)
+q3.forecastEps <- forecast(auto.arima(subset(epsTS, quarter = 3)),h=4)
+q4.forecastEps <- forecast(auto.arima(subset(epsTS, quarter = 4)),h=4)
+
+plot(q1.forecastEps)
+plot(q2.forecastEps)
+plot(q3.forecastEps)
+plot(q4.forecastEps)
+
+# model by sequence
+
+myarima.epsTS <- auto.arima(epsTS)
+summary(myarima.epsTS)
+acf(myarima.epsTS$residuals)
+
+forecast.arimaEps <- forecast(myarima.epsTS,h=8)
+plot(q1.forecastEps, main="ARIMA - Seasonal (Q1)")
+
+
+q1.forecastEps
+
+consTS <- ts(epsData$Cons., start = c(2007,1), end=c(2016,4), frequency = 4)
+
+
+plot(forecast.arimaEps, main="ARIMA - Continuous")
+q1Arima <- auto.arima(subset(epsTS, quarter = 1), xreg= subset(consTS, quarter = 1))
+q2Arima <- auto.arima(subset(epsTS, quarter = 2), xreg= subset(consTS, quarter = 2))
+q3Arima <- auto.arima(subset(epsTS, quarter = 3), xreg= subset(consTS, quarter = 3))
+q4Arima <- auto.arima(subset(epsTS, quarter = 4), xreg= subset(consTS, quarter = 4))
+q2.forecastEps <- forecast(q2Arima, h=1, xreg = forecast(auto.arima(subset(consTS, quarter = 2)), h=1)$mean)
+q3.forecastEps <- forecast(q3Arima, h=1, xreg = forecast(auto.arima(subset(consTS, quarter = 3)), h=1)$mean)
+q4.forecastEps <- forecast(q4Arima, h=1, xreg = forecast(auto.arima(subset(consTS, quarter = 4)), h=1)$mean)
+q1.forecastEps <- forecast(q1Arima, h=1, xreg = forecast(auto.arima(subset(consTS, quarter = 1)), h=1)$mean)
+
+plot(q1.forecastEps, main="Q1 Forecast")
+plot(q2.forecastEps, main="Q2 Forecast")
+plot(q3.forecastEps, main="Q3 Forecast")
+plot(q4.forecastEps, main="Q4 Forecast")
+
+
+```
+
+# EPS Prediction Model - 1.2, Linear Regression: Historical Consensus data vs Historical EPS to predict the EPS
+
+```{r warning=FALSE}
+
+lm.conVsEps <- lm(EPS ~ Cons., data = epsData)
+summary(lm.conVsEps)
+ggplotRegression(lm.conVsEps)
+
+```
+
+# Highest (stock) sell price Prediction Model 2.1 - (Linear Regression - Predict Highest stock price on the day of earnings based on EPS)
+
+```{r warning=FALSE}
+
+
+lm.EpsVsHighPrice <- lm(HighStockPrice ~ EPS, data = epsData)
+summary(lm.EpsVsHighPrice)
+ggplotRegression(lm.EpsVsHighPrice)
+plot(lm.EpsVsHighPrice$residuals)
+
+```
+
+
+
+# Highest (stock) sell price Prediction Model 2.2 - (ARIMA model based on historical highest stock prices on the prior earnings day)
+
+```{r warning=FALSE}
+
+myarima.StockPriceTS <- auto.arima(HighPriceTS)
+summary(myarima.StockPriceTS)
+forecast.arimaStockPrice <- forecast(myarima.StockPriceTS,h=4)
+
+# ARIMA with regression
+
+myarima.xreg.StockPriceTS <- auto.arima(HighPriceTS, xreg = epsTS)
+
+xreg.ar.forecaststock <- forecast(myarima.xreg.StockPriceTS, h=8, xreg = forecast(auto.arima(epsTS), h=8)$mean)
+
+plot(forecast(xreg.ar.forecaststock))
+
+
+```
+
+
+# Model 3 - GARCH Model/Plan B model (If Model 1 and 2 fails, if we fail to predict Highest Stock Price from ARIMA and Regression models, then Predict Highest price from seeing how volatile it was on prior earnings announcement)
+
+```{r warning=FALSE}
+
+# the earnings was on 27th after close, the next immediate trading day was 28th Feb. We will find how volatile it was for that surprise percentage
+
+pcln.10yrs.high <- get.hist.quote(instrument = "NFLX", 
+                                  start = "2016-02-28", end = "2017-03-07", 
+                                  quote="High", provider = "yahoo", 
+                                  compression = "d", retclass = "zoo")
+
+
+highprice.arima <- auto.arima(pcln.10yrs.high)
+forecast(highprice.arima,h=30)
+
+#find monthly compound returns
+log.return.pcln <- diff(log(pcln.10yrs.high)) * 100
+plot(log.return.pcln)
+
+#fit and check if we have arch effect )
+
+check.arch.fit <- auto.arima(log.return.pcln, trace=TRUE)
+Box.test(check.arch.fit$residuals^2,type = "Ljung-Box", lag=12)
+
+# develop garch spec
+
+
+plot(pcln.10yrs.high)
+```
+
+
+```
+# References:
+http://www.cnbc.com/2015/04/27/simple-strategy-earns-massive-profits-on-earnings.html
+https://www.thestreet.com/slideshow/13525752/1/10-most-volatile-s-amp-p-500-stocks-on-earnings-day.html
+https://optionalpha.com/proven-ways-to-profit-from-a-stocks-earnings-release-using-these-3-option-strategies-16441.html
+```
